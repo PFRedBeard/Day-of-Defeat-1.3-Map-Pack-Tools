@@ -3,7 +3,6 @@
 use strict;
 use warnings;
 use feature qw(say);
-use Archive::Zip;
 use Carp qw(croak);
 use File::Basename;
 use File::Copy;
@@ -14,25 +13,21 @@ use Pod::Usage;
 
 our $VERSION = '1.0.0';
 
-# Changeable options
-my $mappack_dir = 'dod_mappack';
-
 # GetOptions
-GetOptions( 'dir|d=s' => \$mappack_dir, ) or exit 1;
+GetOptions() or exit 1;
 
 # Set default variables
-my $main_dir              = 'dod';
-my $maps_dir              = 'maps';
-my $overview_dir          = 'overviews';
-my $object_icons_dir      = 'sprites/obj_icons';
-my $main_maps_dir         = catdir( $main_dir, $maps_dir );
-my $mappack_maps_dir      = catdir( $mappack_dir, $maps_dir );
-my $main_overviews_dir    = catdir( $main_dir, $overview_dir );
-my $mappack_overviews_dir = catdir( $mappack_dir, $overview_dir );
-my $rfa_file              = 'res_dod.rfa';
-my $mapcycle              = 'mapcycle.txt';
-my $runmapcycle           = 'perl mapcycle.pl';
-my $resgen                = "resgen -gkv -d $mappack_maps_dir -b $rfa_file";
+my $main_dir               = 'dod';
+my $quickftp_dir           = 'dod_quickftp/dod';
+my $maps_dir               = 'maps';
+my $overview_dir           = 'overviews';
+my $object_icons_dir       = 'sprites/obj_icons';
+my $main_maps_dir          = catdir( $main_dir, $maps_dir );
+my $quickftp_maps_dir      = catdir( $quickftp_dir, $maps_dir );
+my $main_overviews_dir     = catdir( $main_dir, $overview_dir );
+my $quickftp_overviews_dir = catdir( $quickftp_dir, $overview_dir );
+my $rfa_file               = 'res_dod.rfa';
+my $resgen                 = "resgen -gkv -d $quickftp_maps_dir -b $rfa_file";
 my @maps;
 my @missingoverviews;
 my @missingicons;
@@ -67,7 +62,7 @@ sub main {
     # Run directory and RFA file checks
     checks();
 
-    # Set @maps by reading from mapcycle.txt
+    # Set @maps by reading from directory
     setmaps();
 
     # Create mappack directory and move files over
@@ -81,9 +76,6 @@ sub main {
 
     # Write missing files
     writemissing();
-
-    # Create Zip
-    createzip();
 
     exit 0;
 }
@@ -108,27 +100,15 @@ sub checks {
 
 sub setmaps {
 
-    # Check if mapcycle.txt exists. Create if it doesn't and exit.
-    if ( !-f $mapcycle ) {
-        create_mapcycle();
-    }
+    # Set files we want to pull and glob them in.
+    my $globfile = catfile( $main_maps_dir, '*.bsp' );
+    my @allmaps  = glob $globfile;
 
-    # Read in file ignoring blank lines and trimming whitespace.
-    open my $file, '<', $mapcycle or croak $!;
-    my @lines = grep { /\S/xms } <$file>;
-    close $file or croak $!;
+    # Remove full name from path and lowercase.
+    for (@allmaps) { $_ = basename(lc); }
 
-    # If nothing is found is found create a new one.
-    if ( !@lines ) {
-        create_mapcycle();
-    }
-
-    # Run through lines and add them to maps as long as they are not a default.
-    for my $map (@lines) {
-        $map =~ s/\A\s+|\s+\z//gxms;
-        next if $map =~ /\A \/ \//xms;
-        $map .= '.bsp';
-
+    # Place all maps into @maps while skipping defaults.
+    for my $map (@allmaps) {
         if ( !$to_skip{$map} ) { push @maps, $map; }
     }
 
@@ -138,14 +118,14 @@ sub setmaps {
 sub copymaps {
 
     # Create map pack directory if it does not exist
-    if ( !-d $mappack_maps_dir ) {
-        make_a_dir($mappack_maps_dir);
+    if ( !-d $quickftp_maps_dir ) {
+        make_a_dir($quickftp_maps_dir);
     }
 
     # Go through each map and copy it over if not in the mappack dir
     for my $map (@maps) {
-        my $origfile    = catfile( $main_maps_dir,    $map );
-        my $mappackfile = catfile( $mappack_maps_dir, $map );
+        my $origfile    = catfile( $main_maps_dir,     $map );
+        my $mappackfile = catfile( $quickftp_maps_dir, $map );
 
         if ( -f $origfile && !-f $mappackfile ) {
             copy( $origfile, $mappackfile );
@@ -165,7 +145,7 @@ sub modifyres {
         ( my $mapbase = $map ) =~ s/[.] bsp//xms;
 
         # Set res and txt file absolute paths. Ensure path uses / not \
-        my $resfile = catfile( $mappack_maps_dir, "$mapbase.res" );
+        my $resfile = catfile( $quickftp_maps_dir, "$mapbase.res" );
         $resfile =~ s/\\/\//gxms;
 
         # Set res and txt file relative paths. Ensure path uses / not \
@@ -227,7 +207,7 @@ END
     # Check if original txtfile exists
     my $origtxtfile = catfile( $main_dir, $txtfilepath );
     if ( -f $origtxtfile ) {
-        my $newtxtfile = catfile( $mappack_dir, $txtfilepath );
+        my $newtxtfile = catfile( $quickftp_dir, $txtfilepath );
 
         # If not write out our message.
         open my $txtfile, '>', $newtxtfile or croak $!;
@@ -289,8 +269,8 @@ sub checkmissing {
     my ($files) = @_;
 
     for my $file ( @{$files} ) {
-        my $origfile = catfile( $main_dir,    $file );
-        my $mpfile   = catfile( $mappack_dir, $file );
+        my $origfile = catfile( $main_dir,     $file );
+        my $mpfile   = catfile( $quickftp_dir, $file );
         my $pathcheck = dirname($mpfile);
 
         if ( !-d $pathcheck ) { make_a_dir($pathcheck); }
@@ -367,35 +347,6 @@ sub writemissing {
     return 0;
 }
 
-sub createzip {
-
-    # Create zip instance.
-    my $zip = Archive::Zip->new();
-
-    # Add a comment to the zip file.
-    $zip->zipfileComment('Created by PF_Map_Pack_Creator.pl.');
-
-    # Pull all files into the zip file. Rename main folder dod.
-    $zip->addTreeMatching( $mappack_dir, $main_dir, qw{.*} );
-
-    # Write zip file.
-    $zip->writeToFileNamed("$mappack_dir.zip");
-
-    return 0;
-}
-
-sub create_mapcycle {
-
-    # Create our mapcycle.txt
-    system $runmapcycle;
-
-    # Say messages and exit.
-    say 'Map file mapcycle.txt has been generated.';
-    say 'Please edit it to your liking and run this program again.';
-
-    exit 1;
-}
-
 sub make_a_dir {
     my $directory = lc shift;
     make_path(
@@ -414,23 +365,23 @@ __END__
 
 =head1 NAME
 
-PF_Map_Pack_Creator.pl - Generates complete res files for custom DOD maps from mapcycle.txt, Places all the files in a directory and zips them. 
+PF_DoD_QuickFTP.pl - Generates complete res files for custom DOD maps and places all assets into dod_quickftp.
 
 =head1 DESCRIPTION
 
-Script PF_Map_Pack_Creator.pl should be placed in the same folder as your dod folder where the script can read dod/maps.
-The file will read mapcycle.txt, move the .bsp files to your map pack folder, then run resgen to generate the initial res files. 
-Then it ensures all overviews and map txt files are accounted for.
+Script PF_DoD_QuickFTP.pl should be placed in the same folder as your dod folder where the script can read dod/maps.
+The file will then run resgen to generate the initial res files. Then it ensures all overviews and map txt files are accounted for.
 Last it looks for sprites/obj_icons for custom flags to include them in the new res file. 
-All the files needed for all your custom maps are then zipped up with the name you gave it.
+All the files needed for all your custom maps are then moved to dod_quickftp. 
 
-Default name is dod_mappack.zip.
+You can then merge the contents of this folder into your dod server on your http/ftp site for quick downloads.
 
 Missing file names will be placed into the following text files:
 
  missing_overviews.txt - Missing map overviews.
  missing_icons.txt     - Missing flag icons.
  missing_files.txt     - All other missing files + the above.
+
 
 =head1 REQUIRED EXTERNAL COMMANDS
 
@@ -446,16 +397,11 @@ You can also find already compiled versions at places such as moddb.
 
 =head1 USAGE
 
- PF_Map_Pack_Creator.pl
- PF_Map_Pack_Creator.pl -d '$DIRECTORY'
+ PF_DoD_QuickFTP.pl
 
 =head1 OPTIONS
 
 =over 4
-
-=item B<-d, --dir> F<$DIR>
-
-Set the directory name. This will be the name of the created zip file.
 
 =item B<-?, --help>
 
